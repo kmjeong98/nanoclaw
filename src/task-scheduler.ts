@@ -3,11 +3,7 @@ import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
-import {
-  AgentOutput,
-  runAgent,
-  writeTasksSnapshot,
-} from './agent-runner.js';
+import { AgentOutput, runAgent, writeTasksSnapshot } from './agent-runner.js';
 import {
   getAllTasks,
   getDueTasks,
