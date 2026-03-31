@@ -4,10 +4,10 @@ import fs from 'fs';
 
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
-  ContainerOutput,
-  runContainerAgent,
+  AgentOutput,
+  runAgent,
   writeTasksSnapshot,
-} from './container-runner.js';
+} from './agent-runner.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -23,10 +23,7 @@ import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
  * Compute the next run time for a recurring task, anchored to the
- * task's scheduled time rather than Date.now() to prevent cumulative
- * drift on interval-based tasks.
- *
- * Co-authored-by: @community-pr-601
+ * task's scheduled time rather than Date.now() to prevent cumulative drift.
  */
 export function computeNextRun(task: ScheduledTask): string | null {
   if (task.schedule_type === 'once') return null;
@@ -43,15 +40,12 @@ export function computeNextRun(task: ScheduledTask): string | null {
   if (task.schedule_type === 'interval') {
     const ms = parseInt(task.schedule_value, 10);
     if (!ms || ms <= 0) {
-      // Guard against malformed interval that would cause an infinite loop
       logger.warn(
         { taskId: task.id, value: task.schedule_value },
         'Invalid interval value',
       );
       return new Date(now + 60_000).toISOString();
     }
-    // Anchor to the scheduled time, not now, to prevent drift.
-    // Skip past any missed intervals so we always land in the future.
     let next = new Date(task.next_run!).getTime() + ms;
     while (next <= now) {
       next += ms;
@@ -69,7 +63,7 @@ export interface SchedulerDependencies {
   onProcess: (
     groupJid: string,
     proc: ChildProcess,
-    containerName: string,
+    processName: string,
     groupFolder: string,
   ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -85,7 +79,6 @@ async function runTask(
     groupDir = resolveGroupFolderPath(task.group_folder);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    // Stop retry churn for malformed legacy rows.
     updateTask(task.id, { status: 'paused' });
     logger.error(
       { taskId: task.id, groupFolder: task.group_folder, error },
@@ -129,7 +122,7 @@ async function runTask(
     return;
   }
 
-  // Update tasks snapshot for container to read (filtered by group)
+  // Update tasks snapshot for agent to read
   const isMain = group.isMain === true;
   const tasks = getAllTasks();
   writeTasksSnapshot(
@@ -150,27 +143,23 @@ async function runTask(
   let result: string | null = null;
   let error: string | null = null;
 
-  // For group context mode, use the group's current session
   const sessions = deps.getSessions();
   const sessionId =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
 
-  // After the task produces a result, close the container promptly.
-  // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
-  // query loop to time out. A short delay handles any final MCP calls.
   const TASK_CLOSE_DELAY_MS = 10000;
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
 
   const scheduleClose = () => {
-    if (closeTimer) return; // already scheduled
+    if (closeTimer) return;
     closeTimer = setTimeout(() => {
-      logger.debug({ taskId: task.id }, 'Closing task container after result');
+      logger.debug({ taskId: task.id }, 'Closing task agent after result');
       deps.queue.closeStdin(task.chat_jid);
     }, TASK_CLOSE_DELAY_MS);
   };
 
   try {
-    const output = await runContainerAgent(
+    const output = await runAgent(
       group,
       {
         prompt: task.prompt,
@@ -182,18 +171,17 @@ async function runTask(
         assistantName: ASSISTANT_NAME,
         script: task.script || undefined,
       },
-      (proc, containerName) =>
-        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
-      async (streamedOutput: ContainerOutput) => {
+      (proc, processName) =>
+        deps.onProcess(task.chat_jid, proc, processName, task.group_folder),
+      async (streamedOutput: AgentOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
           await deps.sendMessage(task.chat_jid, streamedOutput.result);
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
           deps.queue.notifyIdle(task.chat_jid);
-          scheduleClose(); // Close promptly even when result is null (e.g. IPC-only tasks)
+          scheduleClose();
         }
         if (streamedOutput.status === 'error') {
           error = streamedOutput.error || 'Unknown error';
@@ -206,7 +194,6 @@ async function runTask(
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
     } else if (output.result) {
-      // Result was already forwarded to the user via the streaming callback above
       result = output.result;
     }
 
@@ -258,7 +245,6 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
       }
 
       for (const task of dueTasks) {
-        // Re-check task status in case it was paused/cancelled
         const currentTask = getTaskById(task.id);
         if (!currentTask || currentTask.status !== 'active') {
           continue;

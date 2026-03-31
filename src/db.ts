@@ -130,18 +130,9 @@ function createSchema(database: Database.Database): void {
   try {
     database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
     database.exec(`ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`);
-    // Backfill from JID patterns
-    database.exec(
-      `UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`,
-    );
-    database.exec(
-      `UPDATE chats SET channel = 'whatsapp', is_group = 0 WHERE jid LIKE '%@s.whatsapp.net'`,
-    );
+    // Backfill from JID patterns (Discord only)
     database.exec(
       `UPDATE chats SET channel = 'discord', is_group = 1 WHERE jid LIKE 'dc:%'`,
-    );
-    database.exec(
-      `UPDATE chats SET channel = 'telegram', is_group = 0 WHERE jid LIKE 'tg:%'`,
     );
   } catch {
     /* columns already exist */
@@ -609,7 +600,7 @@ export function getRegisteredGroup(
     folder: row.folder,
     trigger: row.trigger_pattern,
     added_at: row.added_at,
-    containerConfig: row.container_config
+    agentConfig: row.container_config
       ? JSON.parse(row.container_config)
       : undefined,
     requiresTrigger:
@@ -631,7 +622,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.folder,
     group.trigger,
     group.added_at,
-    group.containerConfig ? JSON.stringify(group.containerConfig) : null,
+    group.agentConfig ? JSON.stringify(group.agentConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
     group.isMain ? 1 : 0,
   );
@@ -662,7 +653,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       folder: row.folder,
       trigger: row.trigger_pattern,
       added_at: row.added_at,
-      containerConfig: row.container_config
+      agentConfig: row.container_config
         ? JSON.parse(row.container_config)
         : undefined,
       requiresTrigger:

@@ -1,11 +1,13 @@
 {
   "name": "nanoclaw",
-  "version": "1.2.43",
-  "description": "Personal Claude assistant. Lightweight, secure, customizable.",
+  "version": "2.0.0",
+  "description": "Discord-only dual-agent orchestrator (Claude Code + Codex CLI)",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cd agent && npm run build",
+    "build:host": "tsc",
+    "build:agent": "cd agent && npm run build",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
@@ -13,15 +15,12 @@
     "format:fix": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "prepare": "husky",
-    "setup": "tsx setup/index.ts",
-    "auth": "tsx src/whatsapp-auth.ts",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@onecli-sh/sdk": "^0.2.0",
     "better-sqlite3": "11.10.0",
     "cron-parser": "5.5.0"
   },

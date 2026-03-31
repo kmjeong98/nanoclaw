@@ -5,7 +5,7 @@ import path from 'path';
 import { describe, expect, it, vi } from 'vitest';
 
 describe('database migrations', () => {
-  it('defaults Telegram backfill chats to direct messages', async () => {
+  it('defaults Discord backfill chats to groups', async () => {
     const repoRoot = process.cwd();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-db-test-'));
 
@@ -26,17 +26,12 @@ describe('database migrations', () => {
         .prepare(
           `INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)`,
         )
-        .run('tg:12345', 'Telegram DM', '2024-01-01T00:00:00.000Z');
+        .run('dc:1234567890', 'Discord Channel', '2024-01-01T00:00:00.000Z');
       legacyDb
         .prepare(
           `INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)`,
         )
-        .run('tg:-10012345', 'Telegram Group', '2024-01-01T00:00:01.000Z');
-      legacyDb
-        .prepare(
-          `INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)`,
-        )
-        .run('room@g.us', 'WhatsApp Group', '2024-01-01T00:00:02.000Z');
+        .run('dc:9876543210', 'Discord Channel 2', '2024-01-01T00:00:01.000Z');
       legacyDb.close();
 
       vi.resetModules();
@@ -46,16 +41,12 @@ describe('database migrations', () => {
       initDatabase();
 
       const chats = getAllChats();
-      expect(chats.find((chat) => chat.jid === 'tg:12345')).toMatchObject({
-        channel: 'telegram',
-        is_group: 0,
+      expect(chats.find((chat) => chat.jid === 'dc:1234567890')).toMatchObject({
+        channel: 'discord',
+        is_group: 1,
       });
-      expect(chats.find((chat) => chat.jid === 'tg:-10012345')).toMatchObject({
-        channel: 'telegram',
-        is_group: 0,
-      });
-      expect(chats.find((chat) => chat.jid === 'room@g.us')).toMatchObject({
-        channel: 'whatsapp',
+      expect(chats.find((chat) => chat.jid === 'dc:9876543210')).toMatchObject({
+        channel: 'discord',
         is_group: 1,
       });
 

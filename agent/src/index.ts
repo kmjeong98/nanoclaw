@@ -1,17 +1,23 @@
 /**
  * NanoClaw Agent Runner
- * Runs inside a container, receives config via stdin, outputs result to stdout
+ * Runs as a subprocess on the host, receives config via stdin, outputs result to stdout
  *
  * Input protocol:
- *   Stdin: Full ContainerInput JSON (read until EOF, like before)
- *   IPC:   Follow-up messages written as JSON files to /workspace/ipc/input/
+ *   Stdin: Full AgentInput JSON (read until EOF)
+ *   IPC:   Follow-up messages written as JSON files to $NANOCLAW_IPC_DIR/input/
  *          Files: {type:"message", text:"..."}.json — polled and consumed
- *          Sentinel: /workspace/ipc/input/_close — signals session end
+ *          Sentinel: $NANOCLAW_IPC_DIR/input/_close — signals session end
  *
  * Stdout protocol:
  *   Each result is wrapped in OUTPUT_START_MARKER / OUTPUT_END_MARKER pairs.
  *   Multiple results may be emitted (one per agent teams result).
  *   Final marker after loop ends signals completion.
+ *
+ * Environment variables:
+ *   NANOCLAW_GROUP_DIR     — path to the group's working directory
+ *   NANOCLAW_IPC_DIR       — path to the group's IPC directory
+ *   NANOCLAW_GLOBAL_DIR    — path to the global memory directory
+ *   NANOCLAW_SESSIONS_DIR  — path to the group's .claude sessions directory
  */
 
 import fs from 'fs';
@@ -20,7 +26,7 @@ import { execFile } from 'child_process';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
-interface ContainerInput {
+interface AgentInput {
   prompt: string;
   sessionId?: string;
   groupFolder: string;
@@ -31,7 +37,7 @@ interface ContainerInput {
   script?: string;
 }
 
-interface ContainerOutput {
+interface AgentOutput {
   status: 'success' | 'error';
   result: string | null;
   newSessionId?: string;
@@ -56,7 +62,11 @@ interface SDKUserMessage {
   session_id: string;
 }
 
-const IPC_INPUT_DIR = '/workspace/ipc/input';
+// Paths from environment variables (set by the host agent-runner.ts)
+const GROUP_DIR = process.env.NANOCLAW_GROUP_DIR!;
+const IPC_BASE_DIR = process.env.NANOCLAW_IPC_DIR!;
+const GLOBAL_DIR = process.env.NANOCLAW_GLOBAL_DIR || '';
+const IPC_INPUT_DIR = path.join(IPC_BASE_DIR, 'input');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
 
@@ -109,7 +119,7 @@ async function readStdin(): Promise<string> {
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
-function writeOutput(output: ContainerOutput): void {
+function writeOutput(output: AgentOutput): void {
   console.log(OUTPUT_START_MARKER);
   console.log(JSON.stringify(output));
   console.log(OUTPUT_END_MARKER);
@@ -167,7 +177,7 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       const summary = getSessionSummary(sessionId, transcriptPath);
       const name = summary ? sanitizeFilename(summary) : generateFallbackName();
 
-      const conversationsDir = '/workspace/group/conversations';
+      const conversationsDir = path.join(GROUP_DIR, 'conversations');
       fs.mkdirSync(conversationsDir, { recursive: true });
 
       const date = new Date().toISOString().split('T')[0];
@@ -335,7 +345,7 @@ async function runQuery(
   prompt: string,
   sessionId: string | undefined,
   mcpServerPath: string,
-  containerInput: ContainerInput,
+  agentInput: AgentInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
@@ -369,33 +379,18 @@ async function runQuery(
   let resultCount = 0;
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
   let globalClaudeMd: string | undefined;
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
-  }
-
-  // Discover additional directories mounted at /workspace/extra/*
-  // These are passed to the SDK so their CLAUDE.md files are loaded automatically
-  const extraDirs: string[] = [];
-  const extraBase = '/workspace/extra';
-  if (fs.existsSync(extraBase)) {
-    for (const entry of fs.readdirSync(extraBase)) {
-      const fullPath = path.join(extraBase, entry);
-      if (fs.statSync(fullPath).isDirectory()) {
-        extraDirs.push(fullPath);
-      }
+  if (!agentInput.isMain && GLOBAL_DIR) {
+    const globalClaudeMdPath = path.join(GLOBAL_DIR, 'CLAUDE.md');
+    if (fs.existsSync(globalClaudeMdPath)) {
+      globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
     }
-  }
-  if (extraDirs.length > 0) {
-    log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
   for await (const message of query({
     prompt: stream,
     options: {
-      cwd: '/workspace/group',
-      additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
+      cwd: GROUP_DIR,
       resume: sessionId,
       resumeSessionAt: resumeAt,
       systemPrompt: globalClaudeMd
@@ -420,14 +415,15 @@ async function runQuery(
           command: 'node',
           args: [mcpServerPath],
           env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+            NANOCLAW_CHAT_JID: agentInput.chatJid,
+            NANOCLAW_GROUP_FOLDER: agentInput.groupFolder,
+            NANOCLAW_IS_MAIN: agentInput.isMain ? '1' : '0',
+            NANOCLAW_IPC_DIR: IPC_BASE_DIR,
           },
         },
       },
       hooks: {
-        PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
+        PreCompact: [{ hooks: [createPreCompactHook(agentInput.assistantName)] }],
       },
     }
   })) {
@@ -516,13 +512,12 @@ async function runScript(script: string): Promise<ScriptResult | null> {
 }
 
 async function main(): Promise<void> {
-  let containerInput: ContainerInput;
+  let agentInput: AgentInput;
 
   try {
     const stdinData = await readStdin();
-    containerInput = JSON.parse(stdinData);
-    try { fs.unlinkSync('/tmp/input.json'); } catch { /* may not exist */ }
-    log(`Received input for group: ${containerInput.groupFolder}`);
+    agentInput = JSON.parse(stdinData);
+    log(`Received input for group: ${agentInput.groupFolder}`);
   } catch (err) {
     writeOutput({
       status: 'error',
@@ -532,22 +527,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
-  // No real secrets exist in the container environment.
+  // API keys come from process.env (inherited from host)
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
-  let sessionId = containerInput.sessionId;
+  let sessionId = agentInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
-  // Clean up stale _close sentinel from previous container runs
+  // Clean up stale _close sentinel from previous runs
   try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
 
   // Build initial prompt (drain any pending IPC messages too)
-  let prompt = containerInput.prompt;
-  if (containerInput.isScheduledTask) {
+  let prompt = agentInput.prompt;
+  if (agentInput.isScheduledTask) {
     prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
   }
   const pending = drainIpcInput();
@@ -557,9 +551,9 @@ async function main(): Promise<void> {
   }
 
   // Script phase: run script before waking agent
-  if (containerInput.script && containerInput.isScheduledTask) {
+  if (agentInput.script && agentInput.isScheduledTask) {
     log('Running task script...');
-    const scriptResult = await runScript(containerInput.script);
+    const scriptResult = await runScript(agentInput.script);
 
     if (!scriptResult || !scriptResult.wakeAgent) {
       const reason = scriptResult ? 'wakeAgent=false' : 'script error/no output';
@@ -573,7 +567,7 @@ async function main(): Promise<void> {
 
     // Script says wake agent — enrich prompt with script data
     log(`Script wakeAgent=true, enriching prompt with data`);
-    prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
+    prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${agentInput.prompt}`;
   }
 
   // Query loop: run query → wait for IPC message → run new query → repeat
@@ -582,7 +576,7 @@ async function main(): Promise<void> {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, agentInput, sdkEnv, resumeAt);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -591,8 +585,6 @@ async function main(): Promise<void> {
       }
 
       // If _close was consumed during the query, exit immediately.
-      // Don't emit a session-update marker (it would reset the host's
-      // idle timer and cause a 30-min delay before the next _close).
       if (queryResult.closedDuringQuery) {
         log('Close sentinel consumed during query, exiting');
         break;

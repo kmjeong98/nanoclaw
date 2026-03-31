@@ -2,7 +2,7 @@ import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import { DATA_DIR, MAX_CONCURRENT_AGENTS } from './config.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -70,7 +70,7 @@ export class GroupQueue {
       return;
     }
 
-    if (this.activeCount >= MAX_CONCURRENT_CONTAINERS) {
+    if (this.activeCount >= MAX_CONCURRENT_AGENTS) {
       state.pendingMessages = true;
       if (!this.waitingGroups.includes(groupJid)) {
         this.waitingGroups.push(groupJid);
@@ -111,7 +111,7 @@ export class GroupQueue {
       return;
     }
 
-    if (this.activeCount >= MAX_CONCURRENT_CONTAINERS) {
+    if (this.activeCount >= MAX_CONCURRENT_AGENTS) {
       state.pendingTasks.push({ id: taskId, groupJid, fn });
       if (!this.waitingGroups.includes(groupJid)) {
         this.waitingGroups.push(groupJid);
@@ -318,7 +318,7 @@ export class GroupQueue {
   private drainWaiting(): void {
     while (
       this.waitingGroups.length > 0 &&
-      this.activeCount < MAX_CONCURRENT_CONTAINERS
+      this.activeCount < MAX_CONCURRENT_AGENTS
     ) {
       const nextJid = this.waitingGroups.shift()!;
       const state = this.getGroup(nextJid);
@@ -347,9 +347,8 @@ export class GroupQueue {
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 
-    // Count active containers but don't kill them — they'll finish on their own
-    // via idle timeout or container timeout. The --rm flag cleans them up on exit.
-    // This prevents WhatsApp reconnection restarts from killing working agents.
+    // Count active agents but don't kill them — they'll finish on their own
+    // via idle timeout or agent timeout.
     const activeContainers: string[] = [];
     for (const [_jid, state] of this.groups) {
       if (state.process && !state.process.killed && state.containerName) {
