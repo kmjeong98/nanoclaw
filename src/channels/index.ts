@@ -1,3 +1,5 @@
 // Channel self-registration barrel file.
-// Only Discord is supported in this fork.
-// Discord channel is registered via the /add-discord skill.
+// Each import triggers the channel module's registerChannel() call.
+
+// discord
+import './discord.js';
