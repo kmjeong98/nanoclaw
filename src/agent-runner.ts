@@ -4,6 +4,7 @@
  */
 import { ChildProcess, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -58,6 +59,13 @@ function setupGroupDirs(group: RegisteredGroup): {
   fs.mkdirSync(path.join(ipcDir, 'input'), { recursive: true });
   fs.mkdirSync(sessionsDir, { recursive: true });
 
+  // Symlink ~/.claude/.credentials.json so the agent subprocess can authenticate
+  const homeCredentials = path.join(os.homedir(), '.claude', '.credentials.json');
+  const sessionCredentials = path.join(sessionsDir, '.credentials.json');
+  if (fs.existsSync(homeCredentials) && !fs.existsSync(sessionCredentials)) {
+    fs.symlinkSync(homeCredentials, sessionCredentials);
+  }
+
   // Ensure settings.json exists for Claude Code SDK
   const settingsFile = path.join(sessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
@@ -108,10 +116,11 @@ export async function runAgent(
   fs.mkdirSync(logsDir, { recursive: true });
 
   return new Promise((resolve) => {
-    const proc = spawn('node', [agentRunnerPath], {
+    const proc = spawn(process.execPath, [agentRunnerPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
+        PATH: `${path.dirname(process.execPath)}:${process.env.HOME}/.local/bin:${process.env.PATH || ''}`,
         TZ: TIMEZONE,
         HOME: process.env.HOME,
         NANOCLAW_GROUP_DIR: groupDir,

@@ -412,7 +412,7 @@ async function runQuery(
       settingSources: ['project', 'user'],
       mcpServers: {
         nanoclaw: {
-          command: 'node',
+          command: process.execPath,
           args: [mcpServerPath],
           env: {
             NANOCLAW_CHAT_JID: agentInput.chatJid,
