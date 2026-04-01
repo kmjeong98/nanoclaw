@@ -3,7 +3,10 @@ import os from 'os';
 import path from 'path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { readGroupContext, UPDATE_CONTEXT_PROMPT } from './context-persistence.js';
+import {
+  readGroupContext,
+  UPDATE_CONTEXT_PROMPT,
+} from './context-persistence.js';
 
 // Mock group-folder to use temp dirs
 vi.mock('./group-folder.js', () => ({
@@ -29,14 +32,20 @@ describe('readGroupContext', () => {
   it('returns file content when CONTEXT.md exists', () => {
     const groupDir = path.join(testDir, 'test-group');
     fs.mkdirSync(groupDir, { recursive: true });
-    fs.writeFileSync(path.join(groupDir, 'CONTEXT.md'), 'Previous context here');
+    fs.writeFileSync(
+      path.join(groupDir, 'CONTEXT.md'),
+      'Previous context here',
+    );
     expect(readGroupContext('test-group')).toBe('Previous context here');
   });
 
   it('trims whitespace from content', () => {
     const groupDir = path.join(testDir, 'test-group');
     fs.mkdirSync(groupDir, { recursive: true });
-    fs.writeFileSync(path.join(groupDir, 'CONTEXT.md'), '  content with spaces  \n\n');
+    fs.writeFileSync(
+      path.join(groupDir, 'CONTEXT.md'),
+      '  content with spaces  \n\n',
+    );
     expect(readGroupContext('test-group')).toBe('content with spaces');
   });
 

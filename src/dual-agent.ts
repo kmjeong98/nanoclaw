@@ -149,7 +149,11 @@ export async function runDualAgent(
     for (const msg of userMessages) {
       const lower = msg.trim().toLowerCase();
       if (lower === '!stop' || lower === '중지') {
-        await deps.sendMessage(mention ? `${mention} Dual agent conversation stopped.` : `Dual agent conversation stopped.`);
+        await deps.sendMessage(
+          mention
+            ? `${mention} Dual agent conversation stopped.`
+            : `Dual agent conversation stopped.`,
+        );
         return { status: 'stopped', totalTurns };
       }
       // Append user follow-up to the end of the prompt (after review context)
@@ -157,7 +161,16 @@ export async function runDualAgent(
     }
 
     logger.info(
-      { turn: turn + 1, agent: currentAgent, role: turn === 0 ? 'lead' : currentAgent === lead ? 'lead-response' : 'reviewer' },
+      {
+        turn: turn + 1,
+        agent: currentAgent,
+        role:
+          turn === 0
+            ? 'lead'
+            : currentAgent === lead
+              ? 'lead-response'
+              : 'reviewer',
+      },
       'Dual agent turn',
     );
 
@@ -186,7 +199,10 @@ export async function runDualAgent(
     lastResponse = result;
 
     // Send the agent's response via the corresponding bot (strip [DONE]/[APPROVED] tokens)
-    const cleanResult = result.replace(/\[DONE\]/gi, '').replace(/\[APPROVED\]/gi, '').trim();
+    const cleanResult = result
+      .replace(/\[DONE\]/gi, '')
+      .replace(/\[APPROVED\]/gi, '')
+      .trim();
     if (cleanResult) {
       await deps.sendMessage(cleanResult, currentAgent);
     }
@@ -195,7 +211,11 @@ export async function runDualAgent(
     if (isDone(result)) {
       if (currentAgent === reviewer || turn === 0) {
         // Reviewer approved the lead's work, or lead approved reviewer's feedback
-        await deps.sendMessage(mention ? `${mention} Both agents reached consensus. ✅` : `Both agents reached consensus. ✅`);
+        await deps.sendMessage(
+          mention
+            ? `${mention} Both agents reached consensus. ✅`
+            : `Both agents reached consensus. ✅`,
+        );
         return { status: 'consensus', totalTurns };
       }
       // Lead approved reviewer's feedback — still need reviewer to confirm
@@ -212,7 +232,11 @@ export async function runDualAgent(
       currentAgent = reviewer;
     } else if (currentAgent === reviewer) {
       if (isDone(result)) {
-        await deps.sendMessage(mention ? `${mention} Both agents reached consensus. ✅` : `Both agents reached consensus. ✅`);
+        await deps.sendMessage(
+          mention
+            ? `${mention} Both agents reached consensus. ✅`
+            : `Both agents reached consensus. ✅`,
+        );
         return { status: 'consensus', totalTurns };
       }
       // Reviewer gave feedback: send back to lead

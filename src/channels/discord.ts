@@ -179,7 +179,10 @@ export class DiscordChannel implements Channel {
     }
 
     this.client.on(Events.Error, (err) => {
-      logger.error({ err: err.message }, `Discord ${this.botRole} client error`);
+      logger.error(
+        { err: err.message },
+        `Discord ${this.botRole} client error`,
+      );
     });
 
     return new Promise<void>((resolve) => {
@@ -233,7 +236,10 @@ export class DiscordChannel implements Channel {
         'Discord message sent',
       );
     } catch (err) {
-      logger.error({ jid, err }, `Failed to send Discord ${this.botRole} message`);
+      logger.error(
+        { jid, err },
+        `Failed to send Discord ${this.botRole} message`,
+      );
     }
   }
 
@@ -292,7 +298,10 @@ export class DiscordChannel implements Channel {
           await (channel as TextChannel).sendTyping();
         }
       } catch (err) {
-        logger.debug({ jid, err }, `Failed to send Discord ${this.botRole} typing indicator`);
+        logger.debug(
+          { jid, err },
+          `Failed to send Discord ${this.botRole} typing indicator`,
+        );
       }
     };
 
@@ -323,15 +332,15 @@ registerChannel('discord-claude', (opts: ChannelOpts) => {
 });
 
 registerChannel('discord-codex', (opts: ChannelOpts) => {
-  const envVars = readEnvFile([
-    'DISCORD_BOT_TOKEN_CODEX',
-  ]);
+  const envVars = readEnvFile(['DISCORD_BOT_TOKEN_CODEX']);
   const token =
     process.env.DISCORD_BOT_TOKEN_CODEX ||
     envVars.DISCORD_BOT_TOKEN_CODEX ||
     '';
   if (!token) {
-    logger.warn('Discord Codex: DISCORD_BOT_TOKEN_CODEX not set — Codex channels will be unavailable');
+    logger.warn(
+      'Discord Codex: DISCORD_BOT_TOKEN_CODEX not set — Codex channels will be unavailable',
+    );
     return null;
   }
   return new DiscordChannel(token, opts, 'codex', false);

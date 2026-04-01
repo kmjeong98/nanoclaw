@@ -61,7 +61,9 @@ describe('runDualAgent', () => {
     return {
       sent,
       runSingleAgent: vi.fn(async () => {
-        return responses[callIndex++] || { result: null, error: 'no more responses' };
+        return (
+          responses[callIndex++] || { result: null, error: 'no more responses' }
+        );
       }),
       sendMessage: vi.fn(async (text: string) => {
         sent.push(text);
@@ -113,9 +115,7 @@ describe('runDualAgent', () => {
   });
 
   it('returns error when agent fails', async () => {
-    const deps = makeDeps([
-      { result: null, error: 'API timeout' },
-    ]);
+    const deps = makeDeps([{ result: null, error: 'API timeout' }]);
 
     const result = await runDualAgent('fix the bug', 'codex', deps);
 

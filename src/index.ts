@@ -279,7 +279,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     const cleanPrompt = stripAgentMentions(prompt);
 
     // Get the Discord user ID of the last message sender for @mentions
-    const lastUserMessage = [...missedMessages].reverse().find((m) => !m.is_from_me);
+    const lastUserMessage = [...missedMessages]
+      .reverse()
+      .find((m) => !m.is_from_me);
     const userDiscordId = lastUserMessage?.sender;
 
     const claudeBot = findChannelByName(channels, 'discord-claude') || channel;
@@ -319,9 +321,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         return { result: resultText, error: errorText };
       },
       sendMessage: async (text, agentType) => {
-        const targetChannel = agentType
-          ? getBot(agentType)
-          : channel;
+        const targetChannel = agentType ? getBot(agentType) : channel;
         await targetChannel.sendMessage(chatJid, text);
       },
       drainUserMessages: () => {
@@ -332,8 +332,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           MAX_MESSAGES_PER_PROMPT,
         );
         if (pending.length > 0) {
-          lastAgentTimestamp[chatJid] =
-            pending[pending.length - 1].timestamp;
+          lastAgentTimestamp[chatJid] = pending[pending.length - 1].timestamp;
           saveState();
           return pending.map((m) => m.content);
         }
