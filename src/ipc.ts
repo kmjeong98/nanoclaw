@@ -172,6 +172,7 @@ export async function processTaskIpc(
     folder?: string;
     trigger?: string;
     requiresTrigger?: boolean;
+    agentType?: RegisteredGroup['agentType'];
     agentConfig?: RegisteredGroup['agentConfig'];
   },
   sourceGroup: string, // Verified identity from IPC directory
@@ -450,6 +451,7 @@ export async function processTaskIpc(
           folder: data.folder,
           trigger: data.trigger,
           added_at: new Date().toISOString(),
+          agentType: data.agentType,
           agentConfig: data.agentConfig,
           requiresTrigger: data.requiresTrigger,
           isMain: existingGroup?.isMain,

@@ -4,7 +4,12 @@ Discord-only dual-agent orchestrator (Claude Code + Codex CLI). Forked from Nano
 
 ## Quick Context
 
-Single Node.js process with Discord as the only channel. Messages route to Claude Agent SDK running as direct subprocesses on the host (no containers). Each group has isolated filesystem and memory.
+Single Node.js process with Discord as the only channel. Each channel has an `agentType`:
+- `claude` — Claude Code only (via Agent SDK)
+- `codex` — Codex CLI only (via `codex exec --json --full-auto`)
+- `dual` — Both agents collaborate: lead responds, reviewer reviews, iterate until `[APPROVED]`
+
+Agents run as direct subprocesses on the host (no containers). Each group has isolated filesystem and memory.
 
 ## Key Files
 
@@ -18,8 +23,10 @@ Single Node.js process with Discord as the only channel. Messages route to Claud
 | `src/config.ts` | Trigger pattern, paths, intervals |
 | `src/db.ts` | SQLite operations |
 | `src/group-queue.ts` | Group-level queue, concurrency control |
+| `src/dual-agent.ts` | Dual-agent orchestrator (turn mgmt, consensus) |
 | `src/task-scheduler.ts` | Runs scheduled tasks |
 | `agent/src/index.ts` | Agent subprocess (Claude Agent SDK query loop) |
+| `agent/src/codex-runner.ts` | Codex CLI agent subprocess |
 | `agent/src/ipc-mcp-stdio.ts` | MCP server for agent IPC (send_message, schedule_task, etc.) |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
 

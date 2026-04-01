@@ -39,6 +39,7 @@ export interface AgentOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  isThinking?: boolean;
 }
 
 function setupGroupDirs(group: RegisteredGroup): {
@@ -60,7 +61,11 @@ function setupGroupDirs(group: RegisteredGroup): {
   fs.mkdirSync(sessionsDir, { recursive: true });
 
   // Symlink ~/.claude/.credentials.json so the agent subprocess can authenticate
-  const homeCredentials = path.join(os.homedir(), '.claude', '.credentials.json');
+  const homeCredentials = path.join(
+    os.homedir(),
+    '.claude',
+    '.credentials.json',
+  );
   const sessionCredentials = path.join(sessionsDir, '.credentials.json');
   if (fs.existsSync(homeCredentials) && !fs.existsSync(sessionCredentials)) {
     fs.symlinkSync(homeCredentials, sessionCredentials);
@@ -100,13 +105,14 @@ export async function runAgent(
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const processName = `nanoclaw-${safeName}-${Date.now()}`;
 
-  // Resolve the agent runner script
+  const agentType = group.agentType || 'claude';
   const agentRunnerPath = path.join(process.cwd(), 'agent', 'dist', 'index.js');
 
   logger.info(
     {
       group: group.name,
       processName,
+      agentType,
       isMain: input.isMain,
     },
     'Spawning agent subprocess',
@@ -123,6 +129,7 @@ export async function runAgent(
         PATH: `${path.dirname(process.execPath)}:${process.env.HOME}/.local/bin:${process.env.PATH || ''}`,
         TZ: TIMEZONE,
         HOME: process.env.HOME,
+        NANOCLAW_AGENT_TYPE: agentType,
         NANOCLAW_GROUP_DIR: groupDir,
         NANOCLAW_IPC_DIR: ipcDir,
         NANOCLAW_GLOBAL_DIR: globalDir,

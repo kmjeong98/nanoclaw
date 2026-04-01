@@ -23,6 +23,17 @@ import {
   writeTasksSnapshot,
 } from './agent-runner.js';
 import {
+  readGroupContext,
+  UPDATE_CONTEXT_PROMPT,
+} from './context-persistence.js';
+import {
+  detectLeadAgent,
+  DualAgentDeps,
+  makeAgentGroup,
+  runDualAgent,
+  stripAgentMentions,
+} from './dual-agent.js';
+import {
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -31,6 +42,7 @@ import {
   getLastBotMessageTimestamp,
   getMessagesSince,
   getNewMessages,
+  getRecentMessages,
   getRouterState,
   initDatabase,
   setRegisteredGroup,
@@ -42,7 +54,12 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  findChannel,
+  findChannelByName,
+  formatMessages,
+  formatOutbound,
+} from './router.js';
 import {
   isSenderAllowed,
   isTriggerAllowed,
@@ -213,7 +230,25 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  const rawPrompt = formatMessages(missedMessages, TIMEZONE);
+
+  // Build recent message history (last 10 messages for conversation context)
+  const recentMessages = getRecentMessages(chatJid, 10);
+  // Filter out messages already in missedMessages to avoid duplication
+  const missedIds = new Set(missedMessages.map((m) => m.id));
+  const historyMessages = recentMessages.filter((m) => !missedIds.has(m.id));
+  const historyPrompt =
+    historyMessages.length > 0
+      ? `[Recent conversation history]\n${formatMessages(historyMessages, TIMEZONE)}\n---\n\n`
+      : '';
+
+  // Inject prior conversation context from CONTEXT.md
+  const priorContext = readGroupContext(group.folder);
+  const contextPrompt = priorContext
+    ? `[Prior conversation context]\n${priorContext}\n---\n\n`
+    : '';
+
+  const prompt = contextPrompt + historyPrompt + rawPrompt;
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   const previousCursor = lastAgentTimestamp[chatJid] || '';
@@ -237,9 +272,145 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
-  await channel.setTyping?.(chatJid, true);
+  // Dual agent mode
+  if (group.agentType === 'dual') {
+    const rawContent = missedMessages.map((m) => m.content).join('\n');
+    const lead = detectLeadAgent(rawContent);
+    const cleanPrompt = stripAgentMentions(prompt);
+
+    // Get the Discord user ID of the last message sender for @mentions
+    const lastUserMessage = [...missedMessages].reverse().find((m) => !m.is_from_me);
+    const userDiscordId = lastUserMessage?.sender;
+
+    const claudeBot = findChannelByName(channels, 'discord-claude') || channel;
+    const codexBot = findChannelByName(channels, 'discord-codex') || channel;
+    const getBot = (t: 'claude' | 'codex') =>
+      t === 'codex' ? codexBot : claudeBot;
+
+    const dualDeps: DualAgentDeps = {
+      runSingleAgent: async (agentType, agentPrompt) => {
+        // Show typing on the bot that's about to work
+        const bot = getBot(agentType);
+        await bot.setTyping?.(chatJid, true);
+
+        const overrideGroup = makeAgentGroup(group, agentType);
+        let resultText: string | null = null;
+        let errorText: string | null = null;
+
+        await runGroupAgent(
+          overrideGroup,
+          agentPrompt,
+          chatJid,
+          async (output) => {
+            if (output.result && !output.isThinking) {
+              resultText = output.result;
+              // In dual mode, close agent after first real result
+              queue.closeStdin(chatJid);
+            }
+            if (output.status === 'error') {
+              errorText = output.error || 'Unknown error';
+            }
+          },
+        );
+
+        // Stop typing when done
+        await bot.setTyping?.(chatJid, false);
+
+        return { result: resultText, error: errorText };
+      },
+      sendMessage: async (text, agentType) => {
+        const targetChannel = agentType
+          ? getBot(agentType)
+          : channel;
+        await targetChannel.sendMessage(chatJid, text);
+      },
+      drainUserMessages: () => {
+        const pending = getMessagesSince(
+          chatJid,
+          lastAgentTimestamp[chatJid] || '',
+          ASSISTANT_NAME,
+          MAX_MESSAGES_PER_PROMPT,
+        );
+        if (pending.length > 0) {
+          lastAgentTimestamp[chatJid] =
+            pending[pending.length - 1].timestamp;
+          saveState();
+          return pending.map((m) => m.content);
+        }
+        return [];
+      },
+      userDiscordId,
+    };
+
+    const dualResult = await runDualAgent(cleanPrompt, lead, dualDeps);
+    await claudeBot.setTyping?.(chatJid, false);
+    await codexBot.setTyping?.(chatJid, false);
+    if (idleTimer) clearTimeout(idleTimer);
+
+    if (dualResult.status === 'error') {
+      lastAgentTimestamp[chatJid] = previousCursor;
+      saveState();
+      return false;
+    }
+
+    // Update CONTEXT.md after consensus (Claude does the update)
+    if (dualResult.status === 'consensus') {
+      try {
+        const claudeGroup = makeAgentGroup(group, 'claude');
+        await runGroupAgent(
+          claudeGroup,
+          UPDATE_CONTEXT_PROMPT,
+          chatJid,
+          async (output) => {
+            // Close agent after first result to prevent IPC wait loop
+            if (output.result && !output.isThinking) {
+              queue.closeStdin(chatJid);
+            }
+          },
+        );
+      } catch (err) {
+        logger.warn({ group: group.name, err }, 'Failed to update CONTEXT.md');
+      }
+    }
+
+    return true;
+  }
+
+  // Single agent mode (claude or codex)
   let hadError = false;
   let outputSentToUser = false;
+
+  // Pick the right bot for this agent type
+  const agentType = group.agentType || 'claude';
+  const targetBot =
+    findChannelByName(channels, `discord-${agentType}`) || channel;
+
+  await targetBot.setTyping?.(chatJid, true);
+
+  // Batch thinking outputs into a single message
+  let thinkingBuffer: string[] = [];
+  let thinkingFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  const THINKING_FLUSH_MS = 2000; // Flush every 2 seconds
+
+  const flushThinking = async () => {
+    if (thinkingBuffer.length === 0) return;
+    const lines = thinkingBuffer.splice(0);
+    // Deduplicate consecutive identical lines
+    const deduped = lines.filter((l, i) => i === 0 || l !== lines[i - 1]);
+    const formatted = deduped.map((l) => `> ${l}`).join('\n');
+    if (formatted) {
+      await targetBot.sendMessage(chatJid, formatted);
+    }
+  };
+
+  const scheduleThinkingFlush = () => {
+    if (thinkingFlushTimer) clearTimeout(thinkingFlushTimer);
+    thinkingFlushTimer = setTimeout(() => {
+      flushThinking().catch((err) =>
+        logger.warn({ err }, 'Failed to flush thinking'),
+      );
+    }, THINKING_FLUSH_MS);
+  };
 
   const output = await runGroupAgent(group, prompt, chatJid, async (result) => {
     if (result.result) {
@@ -248,15 +419,32 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           ? result.result
           : JSON.stringify(result.result);
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+        if (result.isThinking) {
+          // Accumulate thinking lines for batched send
+          for (const line of text.split('\n')) {
+            if (line.trim()) thinkingBuffer.push(line);
+          }
+          scheduleThinkingFlush();
+        } else {
+          // Flush any pending thinking before final result
+          if (thinkingFlushTimer) clearTimeout(thinkingFlushTimer);
+          await flushThinking();
+          // Final result → normal text
+          logger.info(
+            { group: group.name },
+            `Agent output: ${raw.length} chars`,
+          );
+          await targetBot.sendMessage(chatJid, text);
+          outputSentToUser = true;
+        }
       }
       resetIdleTimer();
     }
 
     if (result.status === 'success') {
+      // Turn off typing when agent goes idle (waiting for IPC)
+      await targetBot.setTyping?.(chatJid, false);
       queue.notifyIdle(chatJid);
     }
 
@@ -265,7 +453,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   });
 
-  await channel.setTyping?.(chatJid, false);
+  // Flush any remaining thinking
+  if (thinkingFlushTimer) clearTimeout(thinkingFlushTimer);
+  await flushThinking();
+
+  await targetBot.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
@@ -283,6 +475,24 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       'Agent error, rolled back message cursor for retry',
     );
     return false;
+  }
+
+  // Update CONTEXT.md after successful conversation
+  if (outputSentToUser) {
+    try {
+      await runGroupAgent(
+        group,
+        UPDATE_CONTEXT_PROMPT,
+        chatJid,
+        async (output) => {
+          if (output.result && !output.isThinking) {
+            queue.closeStdin(chatJid);
+          }
+        },
+      );
+    } catch (err) {
+      logger.warn({ group: group.name, err }, 'Failed to update CONTEXT.md');
+    }
   }
 
   return true;

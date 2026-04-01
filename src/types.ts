@@ -2,11 +2,14 @@ export interface AgentConfig {
   timeout?: number; // Default: 1800000 (30 minutes)
 }
 
+export type AgentType = 'claude' | 'codex' | 'dual';
+
 export interface RegisteredGroup {
   name: string;
   folder: string;
   trigger: string;
   added_at: string;
+  agentType?: AgentType; // Default: 'claude'
   agentConfig?: AgentConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)

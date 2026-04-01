@@ -126,6 +126,15 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add agent_type column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN agent_type TEXT DEFAULT 'claude'`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
@@ -366,6 +375,27 @@ export function getMessagesSince(
     .all(chatJid, sinceTimestamp, `${botPrefix}:%`, limit) as NewMessage[];
 }
 
+/**
+ * Get the N most recent messages in a chat (regardless of cursor position).
+ * Includes both user and bot messages for full conversation context.
+ */
+export function getRecentMessages(
+  chatJid: string,
+  limit: number = 10,
+): NewMessage[] {
+  const sql = `
+    SELECT * FROM (
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+      FROM messages
+      WHERE chat_jid = ?
+        AND content != '' AND content IS NOT NULL
+      ORDER BY timestamp DESC
+      LIMIT ?
+    ) ORDER BY timestamp
+  `;
+  return db.prepare(sql).all(chatJid, limit) as NewMessage[];
+}
+
 export function getLastBotMessageTimestamp(
   chatJid: string,
   botPrefix: string,
@@ -584,6 +614,7 @@ export function getRegisteredGroup(
         container_config: string | null;
         requires_trigger: number | null;
         is_main: number | null;
+        agent_type: string | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -600,6 +631,7 @@ export function getRegisteredGroup(
     folder: row.folder,
     trigger: row.trigger_pattern,
     added_at: row.added_at,
+    agentType: (row.agent_type as RegisteredGroup['agentType']) || undefined,
     agentConfig: row.container_config
       ? JSON.parse(row.container_config)
       : undefined,
@@ -614,8 +646,8 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main, agent_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -625,6 +657,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.agentConfig ? JSON.stringify(group.agentConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
     group.isMain ? 1 : 0,
+    group.agentType || 'claude',
   );
 }
 
@@ -638,6 +671,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     container_config: string | null;
     requires_trigger: number | null;
     is_main: number | null;
+    agent_type: string | null;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -653,6 +687,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       folder: row.folder,
       trigger: row.trigger_pattern,
       added_at: row.added_at,
+      agentType: (row.agent_type as RegisteredGroup['agentType']) || undefined,
       agentConfig: row.container_config
         ? JSON.parse(row.container_config)
         : undefined,

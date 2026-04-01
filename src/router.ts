@@ -50,3 +50,13 @@ export function findChannel(
 ): Channel | undefined {
   return channels.find((c) => c.ownsJid(jid));
 }
+
+/**
+ * Find a specific bot channel by name prefix (e.g. 'discord-claude', 'discord-codex').
+ */
+export function findChannelByName(
+  channels: Channel[],
+  name: string,
+): Channel | undefined {
+  return channels.find((c) => c.name === name);
+}
