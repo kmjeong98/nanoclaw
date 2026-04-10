@@ -6,6 +6,7 @@ import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  ConversationRun,
   NewMessage,
   RegisteredGroup,
   ScheduledTask,
@@ -146,6 +147,25 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* columns already exist */
   }
+
+  // Add conversation_runs table for harness tracking
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_jid TEXT NOT NULL,
+      group_folder TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      lead_agent TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT NOT NULL,
+      turns INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      contract TEXT,
+      verdict TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_conv_runs_group
+      ON conversation_runs(group_folder, finished_at);
+  `);
 }
 
 export function initDatabase(): void {
@@ -550,6 +570,42 @@ export function logTaskRun(log: TaskRunLog): void {
     log.result,
     log.error,
   );
+}
+
+// --- Conversation run tracking ---
+
+export function logConversationRun(run: ConversationRun): void {
+  db.prepare(
+    `INSERT INTO conversation_runs
+       (chat_jid, group_folder, mode, lead_agent, started_at, finished_at, turns, status, contract, verdict)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    run.chat_jid,
+    run.group_folder,
+    run.mode,
+    run.lead_agent,
+    run.started_at,
+    run.finished_at,
+    run.turns,
+    run.status,
+    run.contract,
+    run.verdict,
+  );
+}
+
+export function getRecentRuns(
+  groupFolder: string,
+  limit: number = 20,
+): ConversationRun[] {
+  return db
+    .prepare(
+      `SELECT chat_jid, group_folder, mode, lead_agent, started_at, finished_at, turns, status, contract, verdict
+       FROM conversation_runs
+       WHERE group_folder = ?
+       ORDER BY finished_at DESC
+       LIMIT ?`,
+    )
+    .all(groupFolder, limit) as ConversationRun[];
 }
 
 // --- Router state accessors ---

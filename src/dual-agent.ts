@@ -6,6 +6,7 @@
 import { ChildProcess } from 'child_process';
 
 import { AgentOutput, runAgent } from './agent-runner.js';
+import { parseContract, parseVerdict } from './context-persistence.js';
 import { logger } from './logger.js';
 import { AgentType, RegisteredGroup } from './types.js';
 
@@ -55,17 +56,24 @@ function makeReviewPrompt(
     `[Dual Agent Review Request]\n` +
     `User's original request: ${originalMessage}\n` +
     `${leadName}'s work:\n${leadResponse}\n\n` +
-    `You are the reviewer. Do NOT trust the lead agent's claims at face value.\n` +
-    `Use your tools (Read, Grep, Bash, etc.) to independently verify the work.\n\n` +
-    `Review on two dimensions:\n\n` +
-    `1. **Spec Compliance**: Does the result correctly address the user's request? ` +
-    `Open the relevant files yourself and verify the claims are accurate.\n` +
-    `2. **Quality**: Is the approach sound? Check for edge cases, missing items, or better alternatives.\n\n` +
-    `For each dimension:\n` +
-    `- Name the files you opened or commands you ran to verify.\n` +
-    `- State what you found.\n\n` +
-    `If both dimensions pass after your independent check, end with [DONE].\n` +
-    `If you find issues, provide specific feedback without [DONE].`
+    `You are the reviewer. Your job is to INDEPENDENTLY VERIFY the lead agent's claims.\n\n` +
+    `## MANDATORY: You MUST do the following before giving any verdict:\n` +
+    `1. Actually use tools (Read, Grep, Bash) to check the lead's claims. Do NOT just read the response and agree.\n` +
+    `2. For each claim the lead makes, open the relevant file or run the relevant command yourself.\n` +
+    `3. Write out what you checked and what you found — this is the most important part of your response.\n\n` +
+    `## Review dimensions:\n` +
+    `- **Spec Compliance**: Does the result correctly address the user's request? Verify by reading actual files/code.\n` +
+    `- **Quality**: Is the approach sound? Any edge cases, errors, or better alternatives?\n\n` +
+    `## Response format (you MUST follow this structure):\n` +
+    `### Verification\n` +
+    `(List each claim you checked, the tool/command you used, and what you found)\n\n` +
+    `### Issues Found\n` +
+    `(List any problems, or "None" if all checks passed)\n\n` +
+    `### Verdict\n` +
+    `<verdict>{"pass": true/false, "notes": "summary"}</verdict>\n\n` +
+    `If all checks pass, end with [DONE]. If issues found, do NOT include [DONE].\n\n` +
+    `⚠️ CRITICAL: A response that is just "[DONE]" without verification details will be REJECTED. ` +
+    `You must show your work.`
   );
 }
 
@@ -93,6 +101,30 @@ function isDone(response: string): boolean {
   return /\[DONE\]/i.test(response) || /\[APPROVED\]/i.test(response);
 }
 
+/**
+ * Check if a reviewer response has substantive verification content.
+ * A response with just [DONE]/[APPROVED] and no real analysis is considered empty.
+ */
+function isSubstantiveReview(response: string): boolean {
+  const stripped = response
+    .replace(/\[DONE\]/gi, '')
+    .replace(/\[APPROVED\]/gi, '')
+    .replace(/<verdict>[\s\S]*?<\/verdict>/gi, '')
+    .replace(/<contract>[\s\S]*?<\/contract>/gi, '')
+    .trim();
+  // Must have at least 50 chars of actual content beyond tokens/tags
+  return stripped.length >= 50;
+}
+
+const RECHECK_PROMPT =
+  `Your previous review was rejected because it lacked verification details.\n\n` +
+  `You MUST actually use tools to verify the lead agent's work. Do NOT just agree.\n` +
+  `Re-read the review instructions and provide a proper review with:\n` +
+  `1. Specific files you opened or commands you ran\n` +
+  `2. What you found in each check\n` +
+  `3. Your verdict based on evidence\n\n` +
+  `Show your work. A bare [DONE] is not acceptable.`;
+
 export interface DualAgentDeps {
   /** Run a single agent and return its text response. */
   runSingleAgent: (
@@ -119,6 +151,8 @@ export interface DualAgentDeps {
 export interface DualAgentResult {
   status: 'consensus' | 'max_turns' | 'stopped' | 'error';
   totalTurns: number;
+  contract: string | null;
+  verdict: string | null;
 }
 
 /**
@@ -142,6 +176,8 @@ export async function runDualAgent(
   let currentAgent: LeadAgent = lead;
   let prompt = originalMessage;
   let lastResponse = '';
+  let contract: string | null = null;
+  let verdict: string | null = null;
 
   for (let turn = 0; turn < MAX_TURNS_PER_AGENT * 2; turn++) {
     // Check for user messages that arrived during the previous turn
@@ -154,7 +190,7 @@ export async function runDualAgent(
             ? `${mention} Dual agent conversation stopped.`
             : `Dual agent conversation stopped.`,
         );
-        return { status: 'stopped', totalTurns };
+        return { status: 'stopped', totalTurns, contract, verdict };
       }
       // Append user follow-up to the end of the prompt (after review context)
       prompt = prompt + '\n\n' + makeUserInterjectionPrompt(msg);
@@ -193,10 +229,32 @@ export async function runDualAgent(
           : `${agentLabel(currentAgent)} agent error: ${error || 'no response'}`,
         currentAgent,
       );
-      return { status: 'error', totalTurns };
+      return { status: 'error', totalTurns, contract, verdict };
     }
 
     lastResponse = result;
+
+    // Extract contract from lead's first turn
+    if (turn === 0 && currentAgent === lead) {
+      contract = parseContract(result);
+    }
+    // Extract verdict from reviewer responses
+    if (currentAgent === reviewer) {
+      const v = parseVerdict(result);
+      if (v) verdict = v;
+    }
+
+    // Reject empty reviewer responses — force re-review
+    if (currentAgent === reviewer && isDone(result) && !isSubstantiveReview(result)) {
+      logger.warn(
+        { agent: currentAgent, turn: turn + 1 },
+        'Reviewer sent empty approval — forcing re-review',
+      );
+      // Don't send the empty response, just re-prompt
+      prompt = RECHECK_PROMPT;
+      // Stay on same agent (reviewer), don't switch
+      continue;
+    }
 
     // Send the agent's response via the corresponding bot (strip [DONE]/[APPROVED] tokens)
     const cleanResult = result
@@ -216,7 +274,7 @@ export async function runDualAgent(
             ? `${mention} Both agents reached consensus. ✅`
             : `Both agents reached consensus. ✅`,
         );
-        return { status: 'consensus', totalTurns };
+        return { status: 'consensus', totalTurns, contract, verdict };
       }
       // Lead approved reviewer's feedback — still need reviewer to confirm
     }
@@ -237,7 +295,7 @@ export async function runDualAgent(
             ? `${mention} Both agents reached consensus. ✅`
             : `Both agents reached consensus. ✅`,
         );
-        return { status: 'consensus', totalTurns };
+        return { status: 'consensus', totalTurns, contract, verdict };
       }
       // Reviewer gave feedback: send back to lead
       prompt = makeFeedbackPrompt(agentLabel(reviewer), lastResponse);
@@ -258,7 +316,7 @@ export async function runDualAgent(
       ? `${mention} Max turns reached (${totalTurns} turns) — your input is needed.`
       : `Max turns reached (${totalTurns} turns) — user input needed.`,
   );
-  return { status: 'max_turns', totalTurns };
+  return { status: 'max_turns', totalTurns, contract, verdict };
 }
 
 /**

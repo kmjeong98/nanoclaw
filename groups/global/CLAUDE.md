@@ -18,6 +18,12 @@ Your output is sent to the user or group.
 
 You also have `mcp__nanoclaw__send_message` which sends a message immediately while you're still working. This is useful when you want to acknowledge a request before starting longer work.
 
+### ⚠️ Service restart rule
+When you need to restart the NanoClaw service (`systemctl --user restart nanoclaw`):
+1. **FIRST** send your final response via `mcp__nanoclaw__send_message` — include the full summary of what you did
+2. **THEN** run the restart command
+This is critical because the restart kills your process, so any unsent response will be lost.
+
 ### Internal thoughts
 
 If part of your output is internal reasoning rather than something for the user, wrap it in `<internal>` tags:
@@ -46,6 +52,21 @@ When you learn something important:
 - Create files for structured data (e.g., `customers.md`, `preferences.md`)
 - Split files larger than 500 lines into folders
 - Keep an index in your memory for the files you create
+
+## Harness: Sprint Contracts & Learnings
+
+### Sprint Contracts
+When starting work, state your plan briefly in `<contract>` tags:
+```
+<contract>
+- Fix the null check in processMessages()
+- Add a unit test for the edge case
+</contract>
+```
+This helps track what you committed to vs. what you delivered.
+
+### LEARNINGS.md
+Your workspace has a `LEARNINGS.md` file containing actionable rules learned from past conversations. **Read it and follow its rules.** After each conversation, you may be asked to update it with new patterns or preferences discovered.
 
 ## Message Formatting
 

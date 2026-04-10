@@ -23,7 +23,11 @@ import {
   writeTasksSnapshot,
 } from './agent-runner.js';
 import {
+  parseContract,
+  parseVerdict,
   readGroupContext,
+  readGroupLearnings,
+  SPRINT_CONTRACT_PREAMBLE,
   UPDATE_CONTEXT_PROMPT,
 } from './context-persistence.js';
 import {
@@ -45,6 +49,7 @@ import {
   getRecentMessages,
   getRouterState,
   initDatabase,
+  logConversationRun,
   setRegisteredGroup,
   setRouterState,
   setSession,
@@ -248,7 +253,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     ? `[Prior conversation context]\n${priorContext}\n---\n\n`
     : '';
 
-  const prompt = contextPrompt + historyPrompt + rawPrompt;
+  // Inject learnings from LEARNINGS.md
+  const learnings = readGroupLearnings(group.folder);
+  const learningsPrompt = learnings
+    ? `[Learnings from past conversations]\n${learnings}\n---\n\n`
+    : '';
+
+  // Sprint contract preamble
+  const contractPrompt = `${SPRINT_CONTRACT_PREAMBLE}\n\n`;
+
+  const prompt = contextPrompt + learningsPrompt + historyPrompt + contractPrompt + rawPrompt;
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   const previousCursor = lastAgentTimestamp[chatJid] || '';
@@ -272,8 +286,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
+  const startedAt = new Date().toISOString();
+
   // Dual agent mode
   if (group.agentType === 'dual') {
+    // Block IPC piping — messages stay in DB for drainUserMessages()
+    queue.setDualMode(chatJid, true);
+
     const rawContent = missedMessages.map((m) => m.content).join('\n');
     const lead = detectLeadAgent(rawContent);
     const cleanPrompt = stripAgentMentions(prompt);
@@ -342,9 +361,24 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     };
 
     const dualResult = await runDualAgent(cleanPrompt, lead, dualDeps);
+    queue.setDualMode(chatJid, false); // Re-enable IPC piping
     await claudeBot.setTyping?.(chatJid, false);
     await codexBot.setTyping?.(chatJid, false);
     if (idleTimer) clearTimeout(idleTimer);
+
+    // Log the conversation run
+    logConversationRun({
+      chat_jid: chatJid,
+      group_folder: group.folder,
+      mode: 'dual',
+      lead_agent: lead,
+      started_at: startedAt,
+      finished_at: new Date().toISOString(),
+      turns: dualResult.totalTurns,
+      status: dualResult.status,
+      contract: dualResult.contract,
+      verdict: dualResult.verdict,
+    });
 
     if (dualResult.status === 'error') {
       lastAgentTimestamp[chatJid] = previousCursor;
@@ -352,7 +386,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       return false;
     }
 
-    // Update CONTEXT.md after consensus (Claude does the update)
+    // Update CONTEXT.md + LEARNINGS.md after consensus (Claude does the update)
     if (dualResult.status === 'consensus') {
       try {
         const claudeGroup = makeAgentGroup(group, 'claude');
@@ -378,6 +412,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Single agent mode (claude or codex)
   let hadError = false;
   let outputSentToUser = false;
+  let allOutputText = ''; // Accumulate for contract/verdict parsing
 
   // Pick the right bot for this agent type
   const agentType = group.agentType || 'claude';
@@ -417,6 +452,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         typeof result.result === 'string'
           ? result.result
           : JSON.stringify(result.result);
+      allOutputText += raw + '\n';
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       if (text) {
         if (result.isThinking) {
@@ -459,7 +495,26 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await targetBot.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
-  if (output === 'error' || hadError) {
+  // Extract contract/verdict from accumulated output
+  const singleContract = parseContract(allOutputText);
+  const singleVerdict = parseVerdict(allOutputText);
+  const singleStatus = (output === 'error' || hadError) ? 'error' : 'success';
+
+  // Log the conversation run
+  logConversationRun({
+    chat_jid: chatJid,
+    group_folder: group.folder,
+    mode: 'single',
+    lead_agent: group.agentType || 'claude',
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    turns: 1,
+    status: singleStatus,
+    contract: singleContract,
+    verdict: singleVerdict,
+  });
+
+  if (singleStatus === 'error') {
     if (outputSentToUser) {
       logger.warn(
         { group: group.name },
@@ -476,7 +531,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return false;
   }
 
-  // Update CONTEXT.md after successful conversation
+  // Update CONTEXT.md + LEARNINGS.md after successful conversation
   if (outputSentToUser) {
     try {
       await runGroupAgent(
@@ -490,7 +545,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         },
       );
     } catch (err) {
-      logger.warn({ group: group.name, err }, 'Failed to update CONTEXT.md');
+      logger.warn({ group: group.name, err }, 'Failed to update CONTEXT.md / LEARNINGS.md');
     }
   }
 
@@ -749,7 +804,19 @@ async function main(): Promise<void> {
       name?: string,
       channel?: string,
       isGroup?: boolean,
-    ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
+    ) => {
+      storeChatMetadata(chatJid, timestamp, name, channel, isGroup);
+
+      // Sync channel name to registered_groups if it changed
+      if (name && registeredGroups[chatJid] && registeredGroups[chatJid].name !== name) {
+        logger.info(
+          { chatJid, oldName: registeredGroups[chatJid].name, newName: name },
+          'Updating registered group name',
+        );
+        registeredGroups[chatJid] = { ...registeredGroups[chatJid], name };
+        setRegisteredGroup(chatJid, registeredGroups[chatJid]);
+      }
+    },
     registeredGroups: () => registeredGroups,
   };
 

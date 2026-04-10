@@ -51,6 +51,21 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+// --- Conversation run tracking ---
+
+export interface ConversationRun {
+  chat_jid: string;
+  group_folder: string;
+  mode: 'single' | 'dual';
+  lead_agent: string | null;
+  started_at: string;
+  finished_at: string;
+  turns: number;
+  status: string; // 'success' | 'error' | 'consensus' | 'max_turns' | 'stopped'
+  contract: string | null; // JSON: what the agent said it would do
+  verdict: string | null; // JSON: evaluation result
+}
+
 // --- Channel abstraction ---
 
 export interface Channel {

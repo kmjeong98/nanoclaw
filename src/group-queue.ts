@@ -18,6 +18,7 @@ interface GroupState {
   active: boolean;
   idleWaiting: boolean;
   isTaskContainer: boolean;
+  isDualMode: boolean;
   runningTaskId: string | null;
   pendingMessages: boolean;
   pendingTasks: QueuedTask[];
@@ -42,6 +43,7 @@ export class GroupQueue {
         active: false,
         idleWaiting: false,
         isTaskContainer: false,
+        isDualMode: false,
         runningTaskId: null,
         pendingMessages: false,
         pendingTasks: [],
@@ -57,6 +59,15 @@ export class GroupQueue {
 
   setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
     this.processMessagesFn = fn;
+  }
+
+  /**
+   * Mark a group as running in dual-agent mode.
+   * While in dual mode, sendMessage() returns false so new user messages
+   * stay in the DB and are collected via drainUserMessages() between turns.
+   */
+  setDualMode(groupJid: string, isDual: boolean): void {
+    this.getGroup(groupJid).isDualMode = isDual;
   }
 
   enqueueMessageCheck(groupJid: string): void {
@@ -161,6 +172,9 @@ export class GroupQueue {
     const state = this.getGroup(groupJid);
     if (!state.active || !state.groupFolder || state.isTaskContainer)
       return false;
+    // In dual mode, don't pipe messages directly to the agent subprocess.
+    // Messages are collected via drainUserMessages() between turns instead.
+    if (state.isDualMode) return false;
     state.idleWaiting = false; // Agent is about to receive work, no longer idle
 
     const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
@@ -223,6 +237,7 @@ export class GroupQueue {
       this.scheduleRetry(groupJid, state);
     } finally {
       state.active = false;
+      state.isDualMode = false;
       state.process = null;
       state.containerName = null;
       state.groupFolder = null;

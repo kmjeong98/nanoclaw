@@ -77,7 +77,7 @@ describe('runDualAgent', () => {
   it('reaches consensus when reviewer approves on first review', async () => {
     const deps = makeDeps([
       { result: 'Here is my solution', error: null },
-      { result: 'Looks good! [APPROVED]', error: null },
+      { result: 'I verified the solution by reading the code. The fix is correct and handles edge cases properly. All tests pass. [APPROVED]', error: null },
     ]);
 
     const result = await runDualAgent('fix the bug', 'codex', deps);
@@ -90,7 +90,7 @@ describe('runDualAgent', () => {
   it('reaches consensus with user mention when userDiscordId provided', async () => {
     const deps = makeDeps([
       { result: 'Here is my solution', error: null },
-      { result: 'Looks good! [DONE]', error: null },
+      { result: 'I checked the implementation and verified it addresses the bug correctly. The approach is sound and well-tested. [DONE]', error: null },
     ]);
     deps.userDiscordId = '123456789';
 
@@ -100,12 +100,25 @@ describe('runDualAgent', () => {
     expect(deps.sent.some((s) => s.includes('<@123456789>'))).toBe(true);
   });
 
+  it('rejects empty reviewer approval and forces re-review', async () => {
+    const deps = makeDeps([
+      { result: 'Here is my solution', error: null },
+      { result: '[DONE]', error: null }, // Empty — rejected
+      { result: 'After re-checking: I read the file and verified the fix is correct. The null check handles the edge case. [DONE]', error: null },
+    ]);
+
+    const result = await runDualAgent('fix the bug', 'codex', deps);
+
+    expect(result.status).toBe('consensus');
+    expect(result.totalTurns).toBe(3); // 1 lead + 1 rejected + 1 proper review
+  });
+
   it('handles feedback loop until consensus', async () => {
     const deps = makeDeps([
       { result: 'My solution v1', error: null },
-      { result: 'Issue: missing error handling', error: null },
-      { result: 'Fixed: added error handling [APPROVED]', error: null },
-      { result: 'Now looks correct [APPROVED]', error: null },
+      { result: 'Issue: missing error handling. I checked the code and found that processMessages does not handle null inputs.', error: null },
+      { result: 'Fixed: added error handling for null inputs and wrote tests to cover the edge case. [APPROVED]', error: null },
+      { result: 'I verified the fix by reading the updated code. The null check is correct and tests pass. [APPROVED]', error: null },
     ]);
 
     const result = await runDualAgent('fix the bug', 'codex', deps);
